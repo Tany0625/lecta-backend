@@ -1,0 +1,11 @@
+# Virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# Secret keys & environment variables
+.env
+
+# IDE settings
+.vscode/
+.idea/
