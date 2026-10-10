@@ -19,4 +19,4 @@ def query_ai(prompt: str) -> str:
         temperature = 0.2
     )
 
-    return response
+    return response.choices[0].message.content
