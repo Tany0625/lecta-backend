@@ -1,4 +1,4 @@
-from nebius_client import query_ai
+from ai_client import query_ai
 
 if __name__ == "__main__":
     print("Sending prompt to local AI model...")
