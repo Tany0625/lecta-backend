@@ -1,22 +1,35 @@
 import calendar
 import json
+import os
 import re
+import time
+from collections import defaultdict, deque
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from pydantic import BaseModel, Field
 
 from ai_client import query_ai
 from pdf_reader import extract_pdf_text
 from prompts import NOTICE_ANALYSIS_PROMPT
 
-app = FastAPI()
+# On the server we set HIDE_DOCS=1 so the public /docs test page is switched off.
+HIDE_DOCS = os.getenv("HIDE_DOCS") == "1"
+app = FastAPI(
+    docs_url=None if HIDE_DOCS else "/docs",
+    redoc_url=None,
+    openapi_url=None if HIDE_DOCS else "/openapi.json",
+)
 
 # Limits for the cards. Change these numbers if your layout needs it.
 TASK_MAX_CHARS = 35
 SUMMARY_MAX_CHARS = 80
 MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB upload limit
+# Rate limit: how many notices one user (one IP address) may send per hour.
+RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_HOUR", "10"))
+RATE_WINDOW = 3600  # seconds
+recent_hits = defaultdict(deque)
 MAX_ITEMS = 8
 
 PRIORITIES = ["critical", "high", "medium", "low"]
@@ -29,9 +42,23 @@ HIGH_WORDS = re.compile(
 
 
 class NoticeRequest(BaseModel):
-    text: str
+    text: str = Field(max_length=12000)
     source: str = "Pasted text"
 
+def check_rate_limit(request: Request):
+    """Stop one user from sending too many notices in an hour."""
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+
+    if len(recent_hits) > 10000:  # safety: never let this list grow forever
+        recent_hits.clear()
+
+    hits = recent_hits[ip]
+    while hits and now - hits[0] > RATE_WINDOW:
+        hits.popleft()  # forget requests older than one hour
+    if len(hits) >= RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many uploads. Please try again in a while.")
+    hits.append(now)
 
 def shorten(text, limit):
     """Tidy extra spaces and cut the text at a word boundary if it is too long."""
@@ -186,8 +213,12 @@ def process_notice(raw_text, source):
     prompt = NOTICE_ANALYSIS_PROMPT.replace("TODAY_DATE", today)
     text = normalize_dates(raw_text)
 
-    raw = query_ai(text, prompt, json_mode=True)
-    print("RAW AI ANSWER:", raw)
+    try:
+        raw = query_ai(text, prompt, json_mode=True)
+    except Exception as error:
+        print("AI request failed:", type(error).__name__)  # the error type only, never the notice text
+        raise HTTPException(status_code=503, detail="The AI is busy right now. Please try again in a minute.")
+    
     data = read_ai_json(raw)
 
     items = data.get("items")
@@ -206,12 +237,12 @@ def process_notice(raw_text, source):
     return {"items": results}
 
 
-@app.post("/analyze")
+@app.post("/analyze", dependencies=[Depends(check_rate_limit)])
 def analyze(request: NoticeRequest):
     return process_notice(request.text, request.source)
 
 
-@app.post("/analyze-file")
+@app.post("/analyze-file", dependencies=[Depends(check_rate_limit)])
 def analyze_file(file: UploadFile = File(...)):
     data = file.file.read()
     if len(data) > MAX_FILE_BYTES:

@@ -1,3 +1,4 @@
+# Manual test script. Needs a real GROQ_API_KEY in .env. Run it with: python <this file>
 from ai_client import query_ai
 
 if __name__ == "__main__":

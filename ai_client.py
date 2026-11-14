@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = Groq(api_key=os.getenv("GROQ_API_KEY"), timeout=40.0, max_retries=1)
 
 def query_ai(prompt: str, system_prompt: str = "You are a helpful assistant.", json_mode: bool = False) -> str:
     messages = [

@@ -1,3 +1,4 @@
+# Manual test script. Needs a real GROQ_API_KEY in .env. Run it with: python <this file>
 import json
 from fastapi import HTTPException
 from main import analyze, NoticeRequest
