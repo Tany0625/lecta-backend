@@ -4,10 +4,11 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from ai_client import query_ai
+from pdf_reader import extract_pdf_text
 from prompts import NOTICE_ANALYSIS_PROMPT
 
 app = FastAPI()
@@ -15,6 +16,7 @@ app = FastAPI()
 # Limits for the cards. Change these numbers if your layout needs it.
 TASK_MAX_CHARS = 35
 SUMMARY_MAX_CHARS = 80
+MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB upload limit
 MAX_ITEMS = 8
 
 PRIORITIES = ["critical", "high", "medium", "low"]
@@ -178,11 +180,11 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/analyze")
-def analyze(request: NoticeRequest):
+def process_notice(raw_text, source):
+    """The shared pipeline: notice text in, clean items out. Used by both endpoints."""
     today = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
     prompt = NOTICE_ANALYSIS_PROMPT.replace("TODAY_DATE", today)
-    text = normalize_dates(request.text)
+    text = normalize_dates(raw_text)
 
     raw = query_ai(text, prompt, json_mode=True)
     print("RAW AI ANSWER:", raw)
@@ -194,11 +196,30 @@ def analyze(request: NoticeRequest):
 
     results = []
     for item in items[:MAX_ITEMS]:
-        result = build_item(item, text, request.source)
+        result = build_item(item, text, source)
         if result and result not in results:
             results.append(result)
 
     if not results:
-        results.append({"kind": "notice", "summary": f"No clear notice found. ({request.source})"})
+        results.append({"kind": "notice", "summary": f"No clear notice found. ({source})"})
 
     return {"items": results}
+
+
+@app.post("/analyze")
+def analyze(request: NoticeRequest):
+    return process_notice(request.text, request.source)
+
+
+@app.post("/analyze-file")
+def analyze_file(file: UploadFile = File(...)):
+    data = file.file.read()
+    if len(data) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large (max 10 MB).")
+    if not data.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported for now.")
+    try:
+        text = extract_pdf_text(data)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return process_notice(text, file.filename or "PDF")
